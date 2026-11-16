@@ -66,6 +66,19 @@ class UserResponse(UserBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class LoginRequest(BaseModel):
+    """Authentication request credentials."""
+    email: EmailStr
+    password: str = Field(..., min_length=1, max_length=128)
+
+
+class TokenResponse(BaseModel):
+    """Login response with JWT bearer token and user summary."""
+    access_token: str
+    token_type: str = "bearer"
+    user: UserSummary
+
+
 # ---------------------------------------------------------------------------
 # Snack Schemas (Status is Derived)
 # ---------------------------------------------------------------------------
