@@ -52,6 +52,18 @@ class Settings(BaseSettings):
             url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
         return url
 
+    @property
+    def sqlalchemy_test_database_url(self) -> Optional[str]:
+        """Normalize test database URL for SQLAlchemy 2.0 with psycopg2."""
+        if not self.TEST_DATABASE_URL:
+            return None
+        url = self.TEST_DATABASE_URL
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql+psycopg2://", 1)
+        elif url.startswith("postgresql://") and not url.startswith("postgresql+"):
+            url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
+        return url
+
 
 @lru_cache()
 def get_settings() -> Settings:

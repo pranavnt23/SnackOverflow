@@ -179,6 +179,26 @@ class VoteResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class VoteStatusResponse(BaseModel):
+    """Real-time vote status response for a snack."""
+    snack_id: int
+    vote_count: int
+    has_voted: bool
+
+
+# ---------------------------------------------------------------------------
+# Stock Action Schemas
+# ---------------------------------------------------------------------------
+class ConsumeRequest(BaseModel):
+    """Payload for consuming pantry stock."""
+    amount: int = Field(..., ge=1, le=100, description="Packets to consume (1..100)")
+
+
+class RestockRequest(BaseModel):
+    """Payload for restocking pantry inventory."""
+    amount: int = Field(..., ge=1, le=1000, description="Packets to restock (1..1000)")
+
+
 # ---------------------------------------------------------------------------
 # Activity Audit Schemas
 # ---------------------------------------------------------------------------
