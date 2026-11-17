@@ -56,6 +56,11 @@ Standard error codes include:
 - Never trust client-reported roles or IDs.
 - Zero secrets committed to the repository: all secrets (`DATABASE_URL`, `JWT_SECRET`, etc.) are loaded from environment variables via `pydantic-settings`.
 
+### Rule 7: Snack of the Week Specification
+- Calculated dynamically via SQL: the snack with the highest total vote count in the `votes` table.
+- Ties are broken alphabetically by snack name ascending (`ORDER BY count(votes) DESC, name ASC`).
+- If no votes exist in the database, `snack_of_the_week` is returned as `null`.
+
 ---
 
 ## 3. Database Schema Reference

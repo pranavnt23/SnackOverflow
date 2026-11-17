@@ -107,8 +107,8 @@ def register_error_handlers(app: FastAPI) -> None:
         details: List[Dict[str, Any]] = []
 
         for err in errors:
-            loc = [str(x) for x in err.get("loc", []) if str(x) != "body"]
-            field_name = ".".join(loc) if loc else "body"
+            loc = [str(x) for x in err.get("loc", []) if str(x) not in ("body", "query", "path", "header")]
+            field_name = ".".join(loc) if loc else str(err.get("loc", ["body"])[-1])
             details.append({
                 "field": field_name,
                 "message": err.get("msg", "Invalid value"),

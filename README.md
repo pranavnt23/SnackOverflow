@@ -97,3 +97,4 @@ See [docs/CONTEXT.md](file:///d:/Projects/SnackOverflow/docs/CONTEXT.md) for ful
 3. **One Vote Per User Per Snack**: Enforced by a composite primary key `(user_id, snack_id)` on the `votes` table.
 4. **Audit Trail**: Every restock and consume transaction logs an immutable `activities` row in the same atomic database transaction.
 5. **Uniform Error Format**: All API error responses return `{"error": {"code": "...", "message": "..."}}`.
+6. **Snack of the Week Calculation**: Defined in `/snacks/summary` as the snack with the most votes in the `votes` table. Ties are deterministically broken by snack name ascending (`ORDER BY count(votes) DESC, name ASC`). If no votes exist in the database, `snack_of_the_week` evaluates to `null`.

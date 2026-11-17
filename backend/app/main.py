@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.database import engine, get_db
 from app.errors import DatabaseError, register_error_handlers
-from app.routers import auth_router
+from app.routers import auth_router, snacks_router
 from app.schemas import HealthResponse
 
 logger = logging.getLogger("snack_overflow")
@@ -51,6 +51,7 @@ register_error_handlers(app)
 
 # Include API routers
 app.include_router(auth_router)
+app.include_router(snacks_router)
 
 
 @app.get(
