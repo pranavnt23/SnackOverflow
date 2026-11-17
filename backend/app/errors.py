@@ -60,10 +60,10 @@ class ConflictError(AppError):
 
 
 class InsufficientStockError(AppError):
-    """Stock consumption exceeds available pantry quantity (400)."""
+    """Stock consumption exceeds available pantry quantity (409 Conflict)."""
 
     def __init__(self, message: str = "Insufficient stock available", code: str = "INSUFFICIENT_STOCK") -> None:
-        super().__init__(status_code=status.HTTP_400_BAD_REQUEST, code=code, message=message)
+        super().__init__(status_code=status.HTTP_409_CONFLICT, code=code, message=message)
 
 
 class DatabaseError(AppError):

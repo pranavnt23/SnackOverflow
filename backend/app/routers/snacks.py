@@ -7,12 +7,15 @@ from sqlalchemy.orm import Session
 from app.deps import get_current_user, get_db, require_admin
 from app.models import SnackCategory, User
 from app.schemas import (
+    ConsumeRequest,
     PaginatedSnacksResponse,
+    RestockRequest,
     SnackCreate,
     SnackResponse,
     SnackStatus,
     SnackSummaryResponse,
     SnackUpdate,
+    VoteStatusResponse,
 )
 from app.services import snack_service
 
@@ -134,3 +137,101 @@ def delete_snack(
     Votes cascade and activities remain intact with snack_id set to NULL.
     """
     snack_service.delete_snack(db=db, snack_id=id)
+
+
+# ===========================================================================
+# INVENTORY TRANSACTIONS: CONSUME & RESTOCK
+# ===========================================================================
+
+@router.post(
+    "/{id}/consume",
+    response_model=SnackResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Atomically consume snack inventory",
+)
+def consume_snack(
+    id: int,
+    payload: ConsumeRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> SnackResponse:
+    """
+    Atomically decrement snack quantity and log an audit activity within ONE database transaction.
+    Returns updated snack details or 409 INSUFFICIENT_STOCK if stock is inadequate.
+    """
+    return snack_service.consume_snack(
+        db=db,
+        snack_id=id,
+        amount=payload.amount,
+        current_user_id=current_user.id,
+    )
+
+
+@router.post(
+    "/{id}/restock",
+    response_model=SnackResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Restock snack inventory (Admin only)",
+)
+def restock_snack(
+    id: int,
+    payload: RestockRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_admin),
+) -> SnackResponse:
+    """
+    Atomically increment snack quantity and record restock activity log (Admin only).
+    """
+    return snack_service.restock_snack(
+        db=db,
+        snack_id=id,
+        amount=payload.amount,
+        current_user_id=current_user.id,
+    )
+
+
+# ===========================================================================
+# SNACK VOTING: VOTE & UNVOTE
+# ===========================================================================
+
+@router.post(
+    "/{id}/vote",
+    response_model=VoteStatusResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Vote for a snack",
+)
+def vote_for_snack(
+    id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> VoteStatusResponse:
+    """
+    Vote for a snack. Enforced by database composite primary key (user_id, snack_id).
+    Returns 409 ALREADY_VOTED if the user has already voted for this snack.
+    """
+    return snack_service.add_vote(
+        db=db,
+        snack_id=id,
+        current_user_id=current_user.id,
+    )
+
+
+@router.delete(
+    "/{id}/vote",
+    response_model=VoteStatusResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Remove vote for a snack",
+)
+def remove_vote_for_snack(
+    id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> VoteStatusResponse:
+    """
+    Remove an existing vote. Returns 404 VOTE_NOT_FOUND if the user has not voted.
+    """
+    return snack_service.remove_vote(
+        db=db,
+        snack_id=id,
+        current_user_id=current_user.id,
+    )

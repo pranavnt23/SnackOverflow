@@ -1,12 +1,12 @@
-"""Snack service: business logic, query composition, and derived status calculations."""
+"""Snack service: business logic, query composition, atomic stock operations, and voting."""
 
 from typing import List, Optional
-from sqlalchemy import and_, case, func, literal, select
+from sqlalchemy import and_, case, func, literal, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.errors import ConflictError, NotFoundError
-from app.models import Snack, SnackCategory, Vote
+from app.errors import ConflictError, InsufficientStockError, NotFoundError
+from app.models import Activity, ActivityAction, Snack, SnackCategory, Vote
 from app.schemas import (
     PaginatedSnacksResponse,
     SnackCreate,
@@ -14,6 +14,7 @@ from app.schemas import (
     SnackStatus,
     SnackSummaryResponse,
     SnackUpdate,
+    VoteStatusResponse,
 )
 
 
@@ -251,3 +252,222 @@ def delete_snack(db: Session, snack_id: int) -> None:
 
     db.delete(snack)
     db.commit()
+
+
+# ===========================================================================
+# ATOMIC STOCK OPERATIONS & AUDIT LOGGING (Interview Focus)
+# ===========================================================================
+
+def consume_snack(
+    db: Session,
+    snack_id: int,
+    amount: int,
+    current_user_id: int,
+) -> SnackResponse:
+    """
+    Atomically consume a quantity of snack in a single conditional database transaction.
+
+    Concurrency & Row-Level Locking Mechanics:
+    -------------------------------------------
+    1. Single Conditional UPDATE:
+       We execute:
+         UPDATE snacks SET quantity = quantity - :amount, updated_at = now()
+         WHERE id = :id AND quantity >= :amount RETURNING quantity, name;
+       In PostgreSQL (READ COMMITTED isolation level), executing an UPDATE acquires
+       an exclusive row-level write lock on the target row in `snacks`.
+       
+    2. Concurrent Request Resolution:
+       If User A and User B concurrently attempt to take the last remaining bag:
+       - User A's transaction acquires the row lock first.
+       - User B's transaction blocks on the row lock until User A commits or rolls back.
+       - When User A commits, PostgreSQL re-evaluates the WHERE clause for User B's statement.
+       - Because User A deducted the quantity, `quantity >= :amount` evaluates to FALSE for User B.
+       - User B's UPDATE updates 0 rows and returns NULL, completely preventing negative stock.
+
+    3. Atomic Activity Logging:
+       The stock reduction and activity row insertion happen in the EXACT SAME transaction.
+       If inserting the activity fails or the server crashes, the entire transaction rolls back,
+       ensuring a stock change NEVER exists without its audit trail.
+    """
+    try:
+        # Atomic conditional decrement using SQLAlchemy Core update().where().returning()
+        stmt = (
+            update(Snack)
+            .where(and_(Snack.id == snack_id, Snack.quantity >= amount))
+            .values(
+                quantity=Snack.quantity - amount,
+                updated_at=func.now(),
+            )
+            .returning(Snack.quantity, Snack.name)
+        )
+        result = db.execute(stmt)
+        row = result.first()
+
+        if row is not None:
+            quantity_after, snack_name = row
+
+            # Insert immutable audit record within the SAME transaction
+            activity = Activity(
+                user_id=current_user_id,
+                snack_id=snack_id,
+                snack_name=snack_name,
+                action=ActivityAction.CONSUMED,
+                amount=amount,
+                quantity_after=quantity_after,
+            )
+            db.add(activity)
+            db.commit()
+
+            # Return updated snack with re-evaluated status
+            return get_snack_by_id(db, snack_id, current_user_id)
+
+        # No row updated: perform follow-up lookup to diagnose the exact issue
+        snack = db.get(Snack, snack_id)
+        if not snack:
+            raise NotFoundError(message=f"Snack with id {snack_id} not found", code="NOT_FOUND")
+
+        # Friendly contextual error messages
+        if snack.quantity == 0:
+            msg = "Someone beat you to the last packet!"
+        else:
+            packet_str = "packet" if snack.quantity == 1 else "packets"
+            msg = f"Someone beat you to it! Only {snack.quantity} {packet_str} left in the pantry."
+
+        raise InsufficientStockError(message=msg, code="INSUFFICIENT_STOCK")
+
+    except Exception:
+        # Guarantee full rollback on any failure
+        db.rollback()
+        raise
+
+
+def restock_snack(
+    db: Session,
+    snack_id: int,
+    amount: int,
+    current_user_id: int,
+) -> SnackResponse:
+    """
+    Atomically restock inventory and log audit record in a single transaction (Admin only).
+
+    UPDATE snacks SET quantity = quantity + :amount, updated_at = now()
+    WHERE id = :id RETURNING quantity, name;
+    """
+    try:
+        stmt = (
+            update(Snack)
+            .where(Snack.id == snack_id)
+            .values(
+                quantity=Snack.quantity + amount,
+                updated_at=func.now(),
+            )
+            .returning(Snack.quantity, Snack.name)
+        )
+        result = db.execute(stmt)
+        row = result.first()
+
+        if row is None:
+            raise NotFoundError(message=f"Snack with id {snack_id} not found", code="NOT_FOUND")
+
+        quantity_after, snack_name = row
+
+        # Record restock audit log in the same atomic transaction
+        activity = Activity(
+            user_id=current_user_id,
+            snack_id=snack_id,
+            snack_name=snack_name,
+            action=ActivityAction.RESTOCKED,
+            amount=amount,
+            quantity_after=quantity_after,
+        )
+        db.add(activity)
+        db.commit()
+
+        return get_snack_by_id(db, snack_id, current_user_id)
+
+    except Exception:
+        db.rollback()
+        raise
+
+
+# ===========================================================================
+# VOTING SYSTEM
+# ===========================================================================
+
+def add_vote(
+    db: Session,
+    snack_id: int,
+    current_user_id: int,
+) -> VoteStatusResponse:
+    """
+    Record a user's vote for a snack item.
+
+    Schema-Enforced Uniqueness:
+    ----------------------------
+    The `votes` table has a Composite Primary Key: PRIMARY KEY (user_id, snack_id).
+    Instead of an in-memory or application-level 'check-then-insert', PostgreSQL
+    enforces uniqueness directly at the B-tree storage level.
+    If the user has already voted, inserting triggers a unique constraint violation
+    which raises an IntegrityError that we catch and map to 409 ALREADY_VOTED.
+    """
+    # Verify snack exists to return a clear 404 NOT_FOUND
+    snack = db.get(Snack, snack_id)
+    if not snack:
+        raise NotFoundError(message=f"Snack with id {snack_id} not found", code="NOT_FOUND")
+
+    vote = Vote(user_id=current_user_id, snack_id=snack_id)
+    db.add(vote)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise ConflictError(
+            message="You have already voted for this snack",
+            code="ALREADY_VOTED",
+        )
+
+    # Compute updated vote count
+    new_vote_count = db.scalar(
+        select(func.count(Vote.user_id)).where(Vote.snack_id == snack_id)
+    ) or 0
+
+    return VoteStatusResponse(
+        snack_id=snack_id,
+        vote_count=new_vote_count,
+        has_voted=True,
+    )
+
+
+def remove_vote(
+    db: Session,
+    snack_id: int,
+    current_user_id: int,
+) -> VoteStatusResponse:
+    """
+    Remove an existing vote for a snack item.
+    Returns 404 VOTE_NOT_FOUND if the user has not voted for this snack.
+    """
+    snack = db.get(Snack, snack_id)
+    if not snack:
+        raise NotFoundError(message=f"Snack with id {snack_id} not found", code="NOT_FOUND")
+
+    vote = db.get(Vote, (current_user_id, snack_id))
+    if not vote:
+        raise NotFoundError(
+            message="You have not voted for this snack",
+            code="VOTE_NOT_FOUND",
+        )
+
+    db.delete(vote)
+    db.commit()
+
+    # Compute updated vote count
+    new_vote_count = db.scalar(
+        select(func.count(Vote.user_id)).where(Vote.snack_id == snack_id)
+    ) or 0
+
+    return VoteStatusResponse(
+        snack_id=snack_id,
+        vote_count=new_vote_count,
+        has_voted=False,
+    )
