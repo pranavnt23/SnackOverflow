@@ -1,9 +1,10 @@
 """Pydantic schemas for validation and API serialization."""
 
+import enum
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 import email_validator
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 # Allow '.local' domain for development / demo emails (e.g. admin@snack.local)
 if hasattr(email_validator, "SPECIAL_USE_DOMAIN_NAMES") and "local" in email_validator.SPECIAL_USE_DOMAIN_NAMES:
@@ -37,7 +38,7 @@ class HealthResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# User Schemas
+# User & Authentication Schemas
 # ---------------------------------------------------------------------------
 class UserBase(BaseModel):
     email: EmailStr
@@ -66,41 +67,101 @@ class UserResponse(UserBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class LoginRequest(BaseModel):
+    """Authentication request credentials."""
+    email: EmailStr
+    password: str = Field(..., min_length=1, max_length=128)
+
+
+class TokenResponse(BaseModel):
+    """Login response with JWT bearer token and user summary."""
+    access_token: str
+    token_type: str = "bearer"
+    user: UserSummary
+
+
 # ---------------------------------------------------------------------------
-# Snack Schemas (Status is Derived)
+# Snack Status & Schemas
 # ---------------------------------------------------------------------------
+class SnackStatus(str, enum.Enum):
+    """Runtime derived snack inventory status."""
+    STOCKED = "stocked"
+    RUNNING_LOW = "running_low"
+    GONE = "gone"
+
+
 class SnackBase(BaseModel):
-    name: str = Field(..., min_length=1, max_length=150)
+    name: str = Field(..., min_length=1, max_length=100)
     category: SnackCategory
     low_stock_threshold: int = Field(default=5, ge=0)
+
+    @field_validator("name")
+    @classmethod
+    def validate_and_strip_name(cls, v: str) -> str:
+        trimmed = v.strip()
+        if not trimmed:
+            raise ValueError("Snack name cannot be empty or whitespace only")
+        if len(trimmed) > 100:
+            raise ValueError("Snack name cannot exceed 100 characters")
+        return trimmed
 
 
 class SnackCreate(SnackBase):
     quantity: int = Field(default=0, ge=0)
 
 
-class SnackResponse(SnackBase):
+class SnackUpdate(BaseModel):
+    """Payload for partial snack update by admin. Quantity is forbidden here."""
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    category: Optional[SnackCategory] = None
+    low_stock_threshold: Optional[int] = Field(default=None, ge=0)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("name")
+    @classmethod
+    def validate_and_strip_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            trimmed = v.strip()
+            if not trimmed:
+                raise ValueError("Snack name cannot be empty or whitespace only")
+            if len(trimmed) > 100:
+                raise ValueError("Snack name cannot exceed 100 characters")
+            return trimmed
+        return v
+
+
+class SnackResponse(BaseModel):
     id: int
+    name: str
+    category: SnackCategory
     quantity: int = Field(..., ge=0)
+    low_stock_threshold: int = Field(..., ge=0)
+    status: SnackStatus
+    vote_count: int = 0
+    has_voted: bool = False
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 
-    @computed_field  # type: ignore[misc]
-    @property
-    def status(self) -> str:
-        """
-        Derived snack inventory status:
-        - 'stocked': quantity > low_stock_threshold
-        - 'running_low': 1 <= quantity <= low_stock_threshold
-        - 'gone': quantity == 0
-        """
-        if self.quantity > self.low_stock_threshold:
-            return "stocked"
-        elif self.quantity > 0:
-            return "running_low"
-        return "gone"
+
+class PaginatedSnacksResponse(BaseModel):
+    """Paginated list of snacks."""
+    items: List[SnackResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class SnackSummaryResponse(BaseModel):
+    """Aggregated pantry stock summary and snack of the week."""
+    stocked: int
+    running_low: int
+    gone: int
+    total: int
+    snack_of_the_week: Optional[SnackResponse] = None
 
 
 # ---------------------------------------------------------------------------
