@@ -63,7 +63,7 @@ Snack Overflow provides real-time pantry inventory visibility, atomic stock cons
 
 ---
 
-## Quickstart Setup Guide (5 Minutes)
+## Quickstart Setup Guide 
 
 ### 1. Prerequisites
 - Python 3.10+ or 3.11+
